@@ -25,10 +25,18 @@ import java.util.TimerTask;
 
 public class AnimationView2 extends View {
     public static float MAX_VELOCITY = 1000;
+    public static float MIN_VELOCITY = 10;
     public static float DEFAULT_BALL_RADIUS = 15;
+    public static float MIN_BALL_RADIUS = 8;
+    public static float MAX_BALL_RADIUS = 35;
+    public static int DEFAULT_PAINT_TRAIL_ALPHA = 128;
+    public static int DEFAULT_ERASING_OVERLAY_ALPHA = 15;
     private static final Random _random = new Random();
 
     private Paint _paintText = new Paint();
+
+    private Paint _paintErasingOverlay = new Paint();
+    private boolean _enableErasingOverlay = true;
 
     // for drawing paint trails
     private Paint _paintTrail = new Paint();
@@ -71,6 +79,9 @@ public class AnimationView2 extends View {
         this.setDrawingCacheEnabled(true);
         _paintTrail.setStyle(Paint.Style.FILL);
         _paintTrail.setAntiAlias(true);
+
+        _paintErasingOverlay.setStyle(Paint.Style.FILL);
+        _paintErasingOverlay.setColor(ColorUtils.setAlphaComponent(Color.WHITE, DEFAULT_ERASING_OVERLAY_ALPHA));
 
         _paintText.setColor(Color.BLACK);
         _paintText.setTextSize(40f);
@@ -124,14 +135,21 @@ public class AnimationView2 extends View {
 
         if(_offScreenBitmap  != null) {
             canvas.drawBitmap(_offScreenBitmap, 0, 0, null);
+
+            if(_enableErasingOverlay){
+                // makes the trails slowly disappear over time
+                _offScreenCanvas.drawRect(0, 0, getWidth(), getHeight(), _paintErasingOverlay);
+            }
         }
 
+        int numBalls = -1;
         synchronized (this.balls) {
+            numBalls = this.balls.size();
             for(Ball ball : this.balls){
 
                 if(_offScreenBitmap  != null) {
                     // draw trail
-                    _paintTrail.setColor(ColorUtils.setAlphaComponent(ball.paint.getColor(), 20));
+                    _paintTrail.setColor(ColorUtils.setAlphaComponent(ball.paint.getColor(), DEFAULT_PAINT_TRAIL_ALPHA));
                     _offScreenCanvas.drawCircle(ball.xLocation, ball.yLocation, ball.radius, _paintTrail);
                 }
 
@@ -150,6 +168,7 @@ public class AnimationView2 extends View {
         }
         //MessageFormat: https://developer.android.com/reference/java/text/MessageFormat.html
         canvas.drawText(MessageFormat.format("fps: {0,number,#.#}", _actualFramesPerSecond), 5, 40, _paintText);
+        canvas.drawText(MessageFormat.format("balls: {0}", numBalls), 5, 80, _paintText);
     }
 
     @Override
@@ -161,14 +180,19 @@ public class AnimationView2 extends View {
 
         switch(motionEvent.getAction()){
             case MotionEvent.ACTION_DOWN:
-                float randomXVelocity = _random.nextFloat() * MAX_VELOCITY;
-                float randomYVelocity = randomXVelocity;
+
+                //setup random velocities. if x and y velocities are equal, trajectories will always be 45 degrees
+                float randomXVelocity = Math.max(_random.nextFloat() * MAX_VELOCITY, MIN_VELOCITY);
+                float randomYVelocity = Math.max(_random.nextFloat() * MAX_VELOCITY, MIN_VELOCITY);
 
                 //setup random direction
                 randomXVelocity = _random.nextFloat() < 0.5f ? randomXVelocity : -1 * randomXVelocity;
                 randomYVelocity = _random.nextFloat() < 0.5f ? randomYVelocity : -1 * randomYVelocity;
 
-                Ball ball = new Ball(DEFAULT_BALL_RADIUS, curTouchX, curTouchY, randomXVelocity, randomYVelocity, getRandomOpaqueColor());
+                //setup random radius
+                float radius = Math.max(_random.nextFloat() * MAX_BALL_RADIUS, MIN_BALL_RADIUS);
+
+                Ball ball = new Ball(radius, curTouchX, curTouchY, randomXVelocity, randomYVelocity, getRandomOpaqueColor());
                 synchronized (this.balls) {
                     this.balls.add(ball);
                 }
