@@ -7,6 +7,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.os.SystemClock;
 import android.support.v4.graphics.ColorUtils;
+import android.support.v4.view.MotionEventCompat;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.MotionEvent;
@@ -14,6 +15,8 @@ import android.view.View;
 
 import java.text.MessageFormat;
 import java.util.ArrayList;
+import java.util.LinkedList;
+import java.util.ListIterator;
 import java.util.Random;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -30,13 +33,21 @@ public class AnimationView2 extends View {
     public static float MIN_BALL_RADIUS = 8;
     public static float MAX_BALL_RADIUS = 35;
     public static int DEFAULT_PAINT_TRAIL_ALPHA = 128;
-    public static int DEFAULT_ERASING_OVERLAY_ALPHA = 15;
+    public static int DEFAULT_ERASING_OVERLAY_ALPHA = 20;
+    public static long DEFAULT_DEATH_THRESHOLD_MILLISEC = 5 * 1000; //5 seconds
+    public static int DEFAULT_BACKGROUND_COLOR = Color.WHITE;
+
     private static final Random _random = new Random();
 
     private Paint _paintText = new Paint();
 
+    // for drawing an erasing overlay
     private Paint _paintErasingOverlay = new Paint();
     private boolean _enableErasingOverlay = true;
+
+    // for eliminating old balls
+    private long _deathThresholdMs = DEFAULT_DEATH_THRESHOLD_MILLISEC;
+    private boolean _enableDeath = true;
 
     // for drawing paint trails
     private Paint _paintTrail = new Paint();
@@ -45,7 +56,8 @@ public class AnimationView2 extends View {
 
     private int _desiredFramesPerSecond = 40;
 
-    public ArrayList<Ball> balls = new ArrayList<Ball>();
+    // switched to linkedlist so penalty not so high for removing aged balls
+    public LinkedList<Ball> balls = new LinkedList<Ball>();
 
     // This is for measuring frame rate, you can ignore
     private float _actualFramesPerSecond = -1;
@@ -57,7 +69,7 @@ public class AnimationView2 extends View {
 
     public AnimationView2(Context context) {
         super(context);
-        init(null, null, 0);
+        init(context, null, 0);
     }
 
     public AnimationView2(Context context, AttributeSet attrs) {
@@ -71,6 +83,7 @@ public class AnimationView2 extends View {
     }
 
     public void init(Context context, AttributeSet attrs, int defStyleAttr) {
+        this.setBackgroundColor(DEFAULT_BACKGROUND_COLOR);
 
         // Set setDrawingCacheEnabled to true to support generating a bitmap copy of the view (for saving)
         // See: http://developer.android.com/reference/android/view/View.html#setDrawingCacheEnabled(boolean)
@@ -81,9 +94,10 @@ public class AnimationView2 extends View {
         _paintTrail.setAntiAlias(true);
 
         _paintErasingOverlay.setStyle(Paint.Style.FILL);
-        _paintErasingOverlay.setColor(ColorUtils.setAlphaComponent(Color.WHITE, DEFAULT_ERASING_OVERLAY_ALPHA));
+        _paintErasingOverlay.setColor(ColorUtils.setAlphaComponent(this.getDrawingCacheBackgroundColor(), DEFAULT_ERASING_OVERLAY_ALPHA));
 
-        _paintText.setColor(Color.BLACK);
+        int inverseBackgroundColor = ~this.getDrawingCacheBackgroundColor() | 0xFF000000;
+        _paintText.setColor(inverseBackgroundColor);
         _paintText.setTextSize(40f);
 
 
@@ -114,7 +128,7 @@ public class AnimationView2 extends View {
 
         if (_offScreenCanvas != null) {
             Paint paint = new Paint();
-            paint.setColor(Color.WHITE);
+            paint.setColor(this.getDrawingCacheBackgroundColor());
             paint.setStyle(Paint.Style.FILL);
             _offScreenCanvas.drawRect(0, 0, this.getWidth(), this.getHeight(), paint);
         }
@@ -173,13 +187,14 @@ public class AnimationView2 extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent motionEvent) {
-        long startTime = SystemClock.elapsedRealtime();
+        // See: https://developer.android.com/training/gestures/multi.html
+        int action = MotionEventCompat.getActionMasked(motionEvent);
 
-        float curTouchX = motionEvent.getX();
-        float curTouchY = motionEvent.getY();
-
-        switch(motionEvent.getAction()){
+        switch(action){
             case MotionEvent.ACTION_DOWN:
+            case MotionEvent.ACTION_POINTER_DOWN:
+                float curTouchX = motionEvent.getX(motionEvent.getPointerCount() - 1);
+                float curTouchY = motionEvent.getY(motionEvent.getPointerCount() - 1);
 
                 //setup random velocities. if x and y velocities are equal, trajectories will always be 45 degrees
                 float randomXVelocity = Math.max(_random.nextFloat() * MAX_VELOCITY, MIN_VELOCITY);
@@ -197,6 +212,7 @@ public class AnimationView2 extends View {
                     this.balls.add(ball);
                 }
 
+                invalidate();
             case MotionEvent.ACTION_MOVE:
                 break;
             case MotionEvent.ACTION_UP:
@@ -222,6 +238,7 @@ public class AnimationView2 extends View {
         public float xVelocity = 10;
         public float yVelocity = 10;
         public Paint paint = new Paint();
+        private long _creationTimestampMs = -1;
 
         public Ball(float radius, float xLoc, float yLoc, float xVel, float yVel, int color){
             this.radius = radius;
@@ -230,6 +247,7 @@ public class AnimationView2 extends View {
             this.xVelocity = xVel;
             this.yVelocity = yVel;
             this.paint.setColor(color);
+            _creationTimestampMs = SystemClock.elapsedRealtime();
         }
 
         public float getRight() {
@@ -247,6 +265,8 @@ public class AnimationView2 extends View {
         public float getBottom(){
             return this.yLocation + this.radius;
         }
+
+        public long getAge(){ return SystemClock.elapsedRealtime() - _creationTimestampMs; }
     }
 
     //TimerTask: https://developer.android.com/reference/java/util/TimerTask.html
@@ -267,18 +287,29 @@ public class AnimationView2 extends View {
             long curTimeInMs = SystemClock.elapsedRealtime();
 
             synchronized (_animationView.balls){
+
+                if(_animationView._enableDeath){
+                    ListIterator<Ball> iter = _animationView.balls.listIterator();
+                    while(iter.hasNext()){
+                        Ball curBall = iter.next();
+                        if(curBall.getAge() > _deathThresholdMs){
+                            iter.remove();
+                        }
+                    }
+                }
+
                 for(Ball ball : _animationView.balls){
                     ball.xLocation += ball.xVelocity * (curTimeInMs - _lastTimeInMs)/1000f;
                     ball.yLocation += ball.yVelocity * (curTimeInMs - _lastTimeInMs)/1000f;
 
                     // check x ball boundary
-                    if(ball.getRight() >= getWidth() || ball.getLeft() <= 0){
+                    if(ball.getRight() > getWidth() || ball.getLeft() < 0){
                         // switch directions
                         ball.xVelocity = -1 * ball.xVelocity;
                     }
 
                     // check y ball boundary
-                    if(ball.getBottom() >= getHeight() || ball.getTop() <= 0){
+                    if(ball.getBottom() > getHeight() || ball.getTop() < 0){
                         // switch directions
                         ball.yVelocity = -1 * ball.yVelocity;
                     }
